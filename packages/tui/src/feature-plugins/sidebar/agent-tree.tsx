@@ -3,11 +3,13 @@ import { displayLabel } from "@opencode/util/session-title-fallback"
 import { MouseButton } from "@opentui/core"
 import { createEffect, createMemo, For, on, onCleanup, Show } from "solid-js"
 import { useAgentTreeExperiment } from "../../config"
+import { useClient } from "../../context/client"
 import { useData } from "../../context/data"
 import { ownedJobs, sessionTree, syncSessionTree } from "../../util/session"
 
 export function SidebarAgentTree(props: { context: Plugin.Context; sessionID: string }) {
   const data = useData()
+  const client = useClient()
   const theme = props.context.theme
   const rows = createMemo(() => sessionTree(data.session.list(), props.sessionID))
   const root = createMemo(() => data.session.root(props.sessionID))
@@ -16,11 +18,12 @@ export function SidebarAgentTree(props: { context: Plugin.Context; sessionID: st
   // 从孙节点直接进入时，补齐祖先后才知道应读取哪个根的后台任务。
   createEffect(on(root, (id) => void data.job.sync(id).catch(() => undefined)))
 
-  // 只同步树的元数据。切换会话、关闭侧栏或实验后，不再继续遍历旧树。
+  // 断线时停止旧遍历；重连后补齐离线期间可能已结束、不会出现在活动会话快照中的后代。
   createEffect(
     on(
-      () => props.sessionID,
-      (id) => {
+      [() => props.sessionID, client.connection.status],
+      ([id, status]) => {
+        if (status !== "connected") return
         let active = true
         onCleanup(() => {
           active = false
