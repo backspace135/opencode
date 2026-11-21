@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import type { SessionInfo } from "@opencode/client"
 import { TextareaRenderable, type Renderable } from "@opentui/core"
+import { createTestRenderer, ManualClock } from "@opentui/core/testing"
 import { createAppFixture } from "./fixture/app"
 import { directory, json } from "./fixture/tui-client"
 
@@ -34,15 +35,28 @@ function messages(id: string) {
   return json({ data: [{ type: "user", id: `msg_${id}`, text: body(id), time: { created: 1 } }], cursor: {} })
 }
 
-async function fixture(current: Node, options: { sessions?: Node[]; hold?: Promise<Response>; height?: number } = {}) {
+async function fixture(
+  current: Node,
+  options: {
+    sessions?: Node[]
+    hold?: Promise<Response>
+    height?: number
+    clock?: ManualClock
+    animations?: boolean
+  } = {},
+) {
   const sessions = options.sessions ?? [...family, x]
   const reads: string[] = []
   const writes: string[] = []
+  const setup =
+    options.clock && (await createTestRenderer({ width: 150, height: 36, clock: options.clock, kittyKeyboard: true }))
+  if (setup) await setup.renderer.setupTerminal()
   const app = await createAppFixture({
+    setup,
     width: 150,
     height: options.height ?? 36,
     config: {
-      animations: false,
+      animations: options.animations ?? false,
       tabs: { mode: "off" },
       experimental: { "agent-tree": true },
       keybinds: { "session.sidebar.toggle": "ctrl+shift+b", "session.child.first": "ctrl+shift+j" },
@@ -116,6 +130,71 @@ function durable(aggregateID: string, seq = 1) {
 function hasPrompt(node: Renderable): boolean {
   return node.visible && (node instanceof TextareaRenderable || node.getChildren().some(hasPrompt))
 }
+
+test.each([true, false])("代理树动效 %p：新节点和选中行立即可用，只有目标行颜色过渡", async (animations) => {
+  const clock = new ManualClock()
+  await using app = await fixture(root, { clock, animations, sessions: [root, a] })
+  // 交接发生在第一帧；手动时钟不会替已启动的渲染器自动推进这一帧。
+  const drive = setInterval(() => clock.advance(16), 5)
+  try {
+    await app.ready
+  } finally {
+    clearInterval(drive)
+  }
+  app.renderer.pause()
+  async function paint(title: string, selected = false) {
+    const deadline = Date.now() + 3000
+    while (true) {
+      await app.renderOnce()
+      const frame = app.captureCharFrame()
+      if (selected ? marked(frame, title) : tree(frame).some((row) => row.text.includes(title))) break
+      if (Date.now() >= deadline) throw new Error(`Missing ${title}\n${frame}`)
+      await Bun.sleep(5)
+    }
+    const row = tree(app.captureCharFrame()).find((row) => row.text.includes(title))!
+    return app.captureSpans().lines[row.y].spans.find((span) => span.text.includes(title))!
+  }
+  await paint(a.title)
+  clock.advance(250)
+  const idle = await paint(a.title)
+  const selected = await paint(root.title, true)
+  app.sessions.push(b)
+  app.events.emit({
+    type: "session.created",
+    id: "evt_insert",
+    created: 2,
+    durable: durable(b.id),
+    data: {
+      sessionID: b.id,
+      parentID: root.id,
+      title: b.title,
+      location: b.location,
+      projectID: b.projectID,
+      slug: "new",
+      version: "test",
+    },
+  })
+  const start = await paint(b.title)
+  expect(start.fg.equals(idle.fg), "新行的起始文字色").toBe(!animations)
+  clock.advance(50)
+  const middle = await paint(b.title)
+  expect(middle.fg.equals(start.fg), "新行的过渡文字色").toBe(!animations)
+  expect((await paint(a.title)).fg.equals(idle.fg)).toBe(true)
+  await click(app, b.title)
+  const first = await paint(b.title, true)
+  expect(
+    first.bg.equals(selected.bg),
+    `选中行的起始底色 ${first.bg.toInts()} / ${selected.bg.toInts()} / ${idle.bg.toInts()}`,
+  ).toBe(!animations)
+  clock.advance(50)
+  expect((await paint(b.title, true)).bg.equals(first.bg), "选中行的过渡底色").toBe(!animations)
+  await click(app, a.title)
+  await paint(a.title, true)
+  expect((await paint(b.title)).fg.equals(idle.fg)).toBe(true)
+  clock.advance(200)
+  expect((await paint(a.title, true)).bg.equals(selected.bg)).toBe(true)
+  expect(app.captureCharFrame()).toContain(body(a.id))
+})
 
 test("鼠标从主对话依次进入 A、A1、B，再回到主对话", async () => {
   await using app = await fixture(root)
