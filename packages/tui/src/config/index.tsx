@@ -401,3 +401,8 @@ export function useClientMcpExperiment() {
   const config = useConfig()
   return () => config.data.experimental?.["client-mcp"] === true
 }
+
+export function useAgentTreeExperiment() {
+  const config = useConfig()
+  return () => config.data.experimental?.["agent-tree"] === true
+}
