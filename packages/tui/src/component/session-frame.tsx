@@ -8,13 +8,14 @@ import {
 } from "@opentui/core"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createEffect, createMemo, createResource, createSignal, on, onCleanup, Show } from "solid-js"
-import { useConfig } from "../config"
+import { useAgentTreeExperiment, useConfig } from "../config"
 import { useData } from "../context/data"
 import { Keymap } from "../context/keymap"
 import { InteractivityProvider } from "../context/interactivity"
 import { useSessionTerminals } from "../context/session-terminals"
 import { usePromptRef } from "../context/prompt"
 import { usePanel } from "../context/panel"
+import { useRoute } from "../context/route"
 import { useStorage } from "../context/storage"
 import { useDialog } from "../ui/dialog"
 import { Session } from "../routes/session"
@@ -30,6 +31,8 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   const sessions = useSessionTerminals()
   const prompt = usePromptRef()
   const config = useConfig()
+  const agentTree = useAgentTreeExperiment()
+  const route = useRoute()
   const data = useData()
   const toast = useToast()
   const terminalError = () => toast.show({ variant: "error", message: "Unable to load terminal" })
@@ -65,7 +68,24 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
     }
     paneResize.onMouseUp(event)
   }
-  const [sidebarOpen, setSidebarOpen] = createSignal(false)
+  const wide = createMemo(() => dimensions().width - props.verticalTabsWidth > 120)
+  // 会话页面按 ID 重新挂载。仅把手动展开的窄屏侧栏交给同族的下一页，不记住历史页面的开关。
+  const [handoff, setHandoff] = useStorage().memory<{ next?: string }>("agent-tree-sidebar", { initial: {} })
+  const [sidebarOpen, setSidebarOpen] = createSignal(agentTree() && !wide() && handoff.next === props.sessionID)
+  onCleanup(() => {
+    const next = route.data.type === "session" ? route.data.sessionID : undefined
+    setHandoff((draft) => {
+      draft.next =
+        agentTree() &&
+        !wide() &&
+        sidebarOpen() &&
+        next &&
+        next !== props.sessionID &&
+        data.session.root(next) === data.session.root(props.sessionID)
+          ? next
+          : undefined
+    })
+  })
   const [sessionWidth, setSessionWidth] = createSignal<number>()
   const [activePane, setActivePane] = createSignal<"session" | "right">("session")
   const [restoreTerminalFocus, setRestoreTerminalFocus] = createSignal(false)
@@ -103,9 +123,8 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
       }
     }),
   )
-  const wide = createMemo(() => dimensions().width - props.verticalTabsWidth > 120)
   const sidebarVisible = createMemo(() => {
-    if (data.session.get(props.sessionID)?.parentID) return false
+    if (!agentTree() && data.session.get(props.sessionID)?.parentID) return false
     if (sidebarOpen()) return true
     return (config.data.session?.sidebar ?? "auto") === "auto" && wide()
   })

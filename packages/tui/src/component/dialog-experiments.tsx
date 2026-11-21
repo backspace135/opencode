@@ -28,6 +28,11 @@ export const experiments: Experiment[] = [
     title: "TUI tools",
     description: "Let the agent open terminals in this TUI (requires server support)",
   },
+  {
+    id: "agent-tree",
+    title: "Agent tree",
+    description: "Switch between a session and its subagents in the sidebar",
+  },
 ]
 
 export function DialogExperiments() {

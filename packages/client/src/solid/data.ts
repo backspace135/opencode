@@ -387,6 +387,8 @@ export function createData(config: CreateDataInput) {
     typeof config.omitToolFileData === "function" ? config.omitToolFileData() : config.omitToolFileData === true
   const stored = (message: SessionMessageInfo) => (omitFiles() ? omitMessageFileData(message) : message)
   const sync = createSync()
+  // 子会话可能先收到改名推送，再出现在父会话的列表里；只为在途的家族快照暂存这段时间的改名。
+  const familyRenames = new Set<Map<string, string>>()
   let activeUpdates: Map<string, DataSessionStatus | undefined> | undefined
   // Job events that arrive while a tree's list is in flight, applied over its response: the latest info, or undefined
   // once settled.
@@ -910,6 +912,7 @@ export function createData(config: CreateDataInput) {
         return
       }
       case "session.renamed": {
+        familyRenames.forEach((titles) => titles.set(event.data.sessionID, event.data.title))
         // Preserve the live title when it races the session's initial read.
         refresh(() => {
           const family = sync.pending(`session.family:${event.data.sessionID}`)
@@ -1954,25 +1957,34 @@ export function createData(config: CreateDataInput) {
       sync(sessionID: string, options?: { children?: boolean }) {
         return sync.run(options?.children ? `session.family:${sessionID}` : `session:${sessionID}`, async () => {
           const started = deletionEpoch
-          const [info, children] = await Promise.all([
-            api().session.get({ sessionID }).catch(evictMissing),
-            options?.children ? listChildren({ parentID: sessionID, order: "desc", limit: CHILD_PAGE }) : [],
-          ])
-          const sessions = [info, ...children].filter((session) => (deletedAt.get(session.id) ?? 0) <= started)
-          batch(() => {
-            setStore(
-              "session",
-              "info",
-              produce((draft) => {
-                for (const session of sessions) draft[session.id] = session
-              }),
-            )
-            for (const session of sessions) {
-              clearDeleted(session.id)
-              sync.complete(`session:${session.id}`)
-              registerSession(session.id)
-            }
-          })
+          const titles = options?.children ? new Map<string, string>() : undefined
+          if (titles) familyRenames.add(titles)
+          try {
+            const [info, children] = await Promise.all([
+              api().session.get({ sessionID }).catch(evictMissing),
+              options?.children ? listChildren({ parentID: sessionID, order: "desc", limit: CHILD_PAGE }) : [],
+            ])
+            const sessions = [info, ...children].filter((session) => (deletedAt.get(session.id) ?? 0) <= started)
+            batch(() => {
+              setStore(
+                "session",
+                "info",
+                produce((draft) => {
+                  for (const session of sessions) {
+                    const title = titles?.get(session.id)
+                    draft[session.id] = title === undefined ? session : { ...session, title }
+                  }
+                }),
+              )
+              for (const session of sessions) {
+                clearDeleted(session.id)
+                sync.complete(`session:${session.id}`)
+                registerSession(session.id)
+              }
+            })
+          } finally {
+            if (titles) familyRenames.delete(titles)
+          }
         })
       },
       invalidate(sessionID: string) {

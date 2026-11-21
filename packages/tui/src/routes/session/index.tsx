@@ -94,7 +94,7 @@ import { PermissionPrompt } from "./permission"
 import { FormPrompt } from "./form"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
 import { DialogExportResult } from "../../ui/dialog-export-result"
-import { useConfig, useNewDesigns } from "../../config"
+import { useAgentTreeExperiment, useConfig, useNewDesigns } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { nextThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
@@ -235,8 +235,11 @@ export function Session(props: {
     open: false,
     tab: undefined as string | undefined,
   })
+  const agentTree = useAgentTreeExperiment()
+  // 子会话只读：没有可见的树时沿用常驻选择器，否则只在用户主动打开时显示。
+  const pinnedPicker = () => !!session()?.parentID && !(agentTree() && props.sidebarVisible)
   const composerVisible = createMemo(
-    () => promptedPermissions().length === 0 && (composer.open || (!!session()?.parentID && forms().length === 0)),
+    () => promptedPermissions().length === 0 && (composer.open || (pinnedPicker() && forms().length === 0)),
   )
   props.onTerminalPicker?.(() => setComposer({ open: true, tab: "terminals" }))
   onCleanup(() => props.onTerminalPicker?.(undefined))
@@ -1410,8 +1413,8 @@ export function Session(props: {
       group: "Session",
       run: (tab?: string) => {
         if (tab === "shell" || tab === "subagents" || tab === "scripts") setComposer({ open: true, tab })
-        else if (composer.open || session()?.parentID) setComposer("open", false)
-        else setComposer({ open: true, tab: openingTab() })
+        else if (composer.open || pinnedPicker()) setComposer("open", false)
+        else setComposer({ open: true, tab: session()?.parentID ? "subagents" : openingTab() })
         dialog.clear()
       },
     },
@@ -1613,7 +1616,7 @@ export function Session(props: {
                 defaultTab={composer.tab ?? (session()?.parentID ? "subagents" : undefined)}
                 onClose={() => {
                   const parent = session()?.parentID
-                  if (parent) {
+                  if (parent && pinnedPicker()) {
                     navigate({ type: "session", sessionID: parent })
                     return
                   }
@@ -1654,7 +1657,7 @@ export function Session(props: {
                     sessionID={route.sessionID}
                   />
                 </Match>
-                <Match when={!disabled()}>
+                <Match when={!disabled() && !session()?.parentID}>
                   <Prompt
                     visible={true}
                     ref={bind}
